@@ -1,0 +1,169 @@
+version: "3.8"
+
+services:
+  # ==========================
+  # Database (MariaDB)
+  # ==========================
+  mariadb:
+    image: mariadb:10.6
+    container_name: mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mariadb:/var/lib/mysql
+    networks:
+      - baron-net
+
+  # ==========================
+  # Redis (cache / queue / socketio)
+  # ==========================
+  redis-cache:
+    image: redis:alpine
+    container_name: redis-cache
+    restart: unless-stopped
+    networks:
+      - baron-net
+
+  redis-queue:
+    image: redis:alpine
+    container_name: redis-queue
+    restart: unless-stopped
+    networks:
+      - baron-net
+
+  redis-socketio:
+    image: redis:alpine
+    container_name: redis-socketio
+    restart: unless-stopped
+    networks:
+      - baron-net
+
+  # ==========================
+  # ERPNext Backend (Gunicorn) - PRODUCTION
+  # ==========================
+  baron-erp-backend:
+    # لو بدك تبني من Dockerfile مباشرة:
+    # build:
+    #   context: .
+    #   args:
+    #     FRAPPE_BRANCH: ${FRAPPE_BRANCH}
+    #     ERPNEXT_REPO: ${ERPNEXT_REPO}
+    #     ERPNEXT_BRANCH: ${ERPNEXT_BRANCH}
+    #     BARONAPP_REPO: ${BARONAPP_REPO}
+    #     BARONAPP_BRANCH: ${BARONAPP_BRANCH}
+    image: baron-app:v1
+    container_name: baron-erp-backend
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+      - redis-cache
+      - redis-queue
+      - redis-socketio
+    working_dir: /home/frappe/frappe-bench
+    # لا نضع command هنا → نستخدم CMD من الصورة (gunicorn production)
+    environment:
+      # تستخدمها سكربتاتك أو site_config.json إن حبيت
+      DB_HOST: mariadb
+      REDIS_CACHE: redis://redis-cache:6379
+      REDIS_QUEUE: redis://redis-queue:6379
+      REDIS_SOCKETIO: redis://redis-socketio:6379
+      # لو تحتاج أي ENV إضافية حطها هنا
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+      # لو بدك Volume منفصل للـ assets:
+      - assets:/home/frappe/frappe-bench/sites/assets
+    ports:
+      - "80:8000"   # الوصول من السيرفر مباشرة
+    networks:
+      - baron-net
+
+  # ==========================
+  # Worker (Background Jobs)
+  # ==========================
+  baron-erp-worker:
+    image: baron-app:v1
+    container_name: baron-erp-worker
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+      - redis-cache
+      - redis-queue
+      - redis-socketio
+    working_dir: /home/frappe/frappe-bench
+    environment:
+      DB_HOST: mariadb
+      REDIS_CACHE: redis://redis-cache:6379
+      REDIS_QUEUE: redis://redis-queue:6379
+      REDIS_SOCKETIO: redis://redis-socketio:6379
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+      - assets:/home/frappe/frappe-bench/sites/assets
+    command: >
+      bash -c "bench worker"
+    networks:
+      - baron-net
+
+  # ==========================
+  # Scheduler (Cron-like jobs)
+  # ==========================
+  baron-erp-scheduler:
+    image: baron-app:v1
+    container_name: baron-erp-scheduler
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+      - redis-cache
+      - redis-queue
+      - redis-socketio
+    working_dir: /home/frappe/frappe-bench
+    environment:
+      DB_HOST: mariadb
+      REDIS_CACHE: redis://redis-cache:6379
+      REDIS_QUEUE: redis://redis-queue:6379
+      REDIS_SOCKETIO: redis://redis-socketio:6379
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+      - assets:/home/frappe/frappe-bench/sites/assets
+    command: >
+      bash -c "bench schedule"
+    networks:
+      - baron-net
+
+  # ==========================
+  # (اختياري) cloudflared Tunnel
+  # اربطه على نفس الشبكة baron-net
+  # ==========================
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: cloudflared
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+  #   networks:
+  #     - baron-net
+
+# ==========================
+# Volumes
+# ==========================
+volumes:
+  sites:
+  logs:
+  assets:
+  mariadb:
+
+# ==========================
+# Network
+# ==========================
+networks:
+  baron-net:
+    driver: bridge
